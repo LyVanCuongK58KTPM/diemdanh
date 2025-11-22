@@ -1,437 +1,455 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, send_file
-import mysql.connector
-from werkzeug.security import generate_password_hash, check_password_hash
-import cv2
-import numpy as np
-import base64
-import os
-import io
-import json
-import pandas as pd 
-from datetime import datetime, date
-from deepface import DeepFace
-from PIL import Image, ImageOps
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GV - Hệ Thống Điểm Danh</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<style>
+    body { background-color: #f4f6f9; font-family: 'Segoe UI', sans-serif; }
+    .navbar-brand i { margin-right: 8px; }
+    .nav-pills .nav-link.active { background-color: #0d6efd; color: #fff; font-weight: 600; }
+    .nav-pills .nav-link { border-radius: 50px; margin-right: 8px; transition: 0.3s; }
+    .nav-pills .nav-link:hover { background-color: #0b5ed7; color: #fff; }
+    .video-container { position: relative; overflow: hidden; border-radius: 15px; background: #000; }
+    video { width: 100%; height: auto; display: block; border-radius: 15px; }
+    #scanLine { position: absolute; top: 0; left: 0; width: 100%; height: 3px; background: linear-gradient(90deg, transparent, #0f0, transparent); animation: scan 2s infinite linear; display: none; z-index: 10; }
+    @keyframes scan { 0% {top:0%} 100% {top:100%} }
+    .scan-status { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); color: #fff; background: rgba(0,0,0,0.6); padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 500; }
+    .card { border-radius: 15px; }
+    .table thead { background-color: #0d6efd; color: #fff; }
+    .btn-round { border-radius: 50px; }
+    .form-select, .form-control { border-radius: 10px; }
+    .modal-content { border-radius: 15px; }
+    .badge-success { background-color: #198754; }
+    .badge-warning { background-color: #ffc107; color: #000; }
+    .tab-pane { padding-top: 15px; }
+</style>
+</head>
+<body>
 
-app = Flask(__name__)
-app.secret_key = 'khoa_bi_mat_sieu_cap_vip_pro'
+<!-- NAVBAR -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm mb-4">
+    <div class="container">
+        <a class="navbar-brand fw-bold" href="#"><i class="fas fa-user-tie"></i> GV: {{ gv.ho_ten }}</a>
+        <div>
+            <a href="/logout" class="btn btn-light text-danger fw-bold btn-sm"><i class="fas fa-power-off"></i> Thoát</a>
+        </div>
+    </div>
+</nav>
 
-# --- CẤU HÌNH DB ---
-db_config = {
-    'user': 'avnadmin',
-    'password': 'AVNS_uwfAJ91Ub4Jnhc-_pOB', # <--- ĐIỀN MẬT KHẨU DB CỦA BẠN
-    'host': 'mysql-2b420606-lyvancuongklbg-6918.e.aivencloud.com',
-    'port': 27739,
-    'database': 'FaceAttendanceDB',
-    'ssl_ca': 'ca.pem'
-}
+<div class="container pb-5">
 
-UPLOAD_FOLDER = 'static/faces'
-if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-MODEL_NAME = "VGG-Face"
+    <!-- MENU TAB -->
+    <ul class="nav nav-pills nav-fill mb-4 shadow-sm p-2 bg-white rounded-4" id="pills-tab" role="tablist">
+        <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#pills-cam">📷 Điểm Danh</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#pills-schedule">📅 Lịch Dạy</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#pills-history">📊 Báo Cáo</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#pills-profile">👤 Cá Nhân</button></li>
+    </ul>
 
-def get_db_connection():
-    return mysql.connector.connect(**db_config)
+    <div class="tab-content" id="pills-tabContent">
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg'}
+        <!-- TAB 1: CAMERA -->
+        <div class="tab-pane fade show active" id="pills-cam">
+            <div class="row g-4">
+                <div class="col-md-7">
+                    <div class="card shadow h-100 p-3">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5 class="text-primary fw-bold"><i class="fas fa-video"></i> Camera AI</h5>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="autoScanToggle" onchange="toggleAutoScan()">
+                                <label class="form-check-label fw-bold text-success" for="autoScanToggle">Auto Scan</label>
+                            </div>
+                        </div>
+                        <select id="lichSelect" class="form-select mb-2">
+                            <option value="" disabled selected>-- Chọn lớp --</option>
+                            {% for lich in schedule %}
+                                <option value="{{ lich.lich_id }}">{{ lich.ten_mon }} - {{ lich.ten_lop }} ({{ lich.gio_bat_dau }})</option>
+                            {% endfor %}
+                        </select>
+                        <select id="cameraSelect" class="form-select mb-3"></select>
+                        <div class="video-container mb-3">
+                            <video id="video" autoplay playsinline></video>
+                            <canvas id="canvas" style="display:none;"></canvas>
+                            <div id="scanLine"></div>
+                            <div id="scanStatus" class="scan-status">Sẵn sàng</div>
+                        </div>
+                        <button id="btnSnap" class="btn btn-primary w-100 fw-bold btn-round" onclick="manualScan()"><i class="fas fa-hand-paper"></i> Chụp Thủ Công</button>
+                    </div>
+                </div>
 
-# Hàm xử lý ảnh PIL
-def process_image_robust(image_source):
-    try:
-        if hasattr(image_source, 'seek'): image_source.seek(0)
-        img_pil = Image.open(image_source)
-        img_pil = ImageOps.exif_transpose(img_pil)
-        img_pil = img_pil.convert('RGB')
-        return np.array(img_pil, dtype=np.uint8)
-    except: return None
+                <div class="col-md-5">
+                    <div class="card shadow h-100 p-3">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h5 class="text-success fw-bold mb-0"><i class="fas fa-users"></i> Đã Có Mặt</h5>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="loadList()"><i class="fas fa-sync"></i></button>
+                        </div>
+                        <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
+                            <table class="table table-hover mb-0">
+                                <thead class="table-light sticky-top">
+                                    <tr><th>Mã SV</th><th>Họ Tên</th><th>Giờ vào</th></tr>
+                                </thead>
+                                <tbody id="liveTableBody">
+                                    <tr><td colspan="3" class="text-center py-4 text-muted">Chưa chọn lớp</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-# ==========================================
-# 1. LOGIN / LOGOUT
-# ==========================================
-@app.route('/', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT * FROM tai_khoan WHERE username = %s", (username,))
-            user = cursor.fetchone()
-            conn.close()
-            if user and check_password_hash(user['password'], password):
-                session['user_id'] = user['user_id']
-                session['role'] = user['role']
-                session['ho_ten'] = user['ho_ten']
-                
-                # Chuyển hướng đúng theo vai trò
-                if user['role'] == 'admin': return redirect(url_for('dashboard'))
-                elif user['role'] == 'giao_vien': return redirect(url_for('teacher_dashboard'))
-                else: return redirect(url_for('student_dashboard'))
-            else:
-                flash('Sai tài khoản hoặc mật khẩu!', 'error')
-        except Exception as e:
-            flash(f"Lỗi kết nối: {str(e)}", "error")
-    return render_template('login.html')
+        <!-- TAB 2: LỊCH DẠY -->
+        <div class="tab-pane fade" id="pills-schedule">
+            <div class="card shadow p-3">
+                <h4 class="text-primary mb-3"><i class="fas fa-calendar-alt"></i> Quản Lý Lịch Dạy</h4>
+                <div class="table-responsive">
+                    <table class="table table-hover table-striped align-middle">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Thứ</th><th>Môn Học</th><th>Lớp</th><th>Thời Gian</th><th>Phòng</th><th>Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for lich in schedule %}
+                            <tr>
+                                <td class="fw-bold text-center">Thứ {{ lich.thu_trong_tuan }}</td>
+                                <td>{{ lich.ten_mon }}</td>
+                                <td>{{ lich.ten_lop }}</td>
+                                <td>{{ lich.gio_bat_dau }} - {{ lich.gio_ket_thuc }}</td>
+                                <td class="text-center fw-bold text-danger">{{ lich.phong_hoc }}</td>
+                                <td class="text-center">
+                                    <button class="btn btn-sm btn-warning btn-round text-white" 
+                                            onclick="openEditModal('{{ lich.lich_id }}','{{ lich.thu_trong_tuan }}','{{ lich.ten_mon }}','{{ lich.ten_lop }}','{{ lich.gio_bat_dau }}','{{ lich.gio_ket_thuc }}','{{ lich.phong_hoc }}')">
+                                        <i class="fas fa-pen"></i> Sửa
+                                    </button>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="6" class="text-center py-3">Không có lịch dạy.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
 
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('login'))
+        <!-- TAB 3: BÁO CÁO & EXCEL -->
+        <div class="tab-pane fade" id="pills-history">
+            <div class="card shadow p-3">
+                <h4 class="text-success mb-3"><i class="fas fa-file-export"></i> Báo Cáo & Excel</h4>
+                <div class="row g-3 mb-3 bg-light p-3 rounded-3">
+                    <div class="col-md-4">
+                        <label class="fw-bold">Môn Học:</label>
+                        <select id="filterMon" class="form-select">
+                            <option value="">-- Tất cả --</option>
+                            {% for m in ds_mon %}<option value="{{ m.mon_id }}">{{ m.ten_mon }}</option>{% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="fw-bold">Ngày Học:</label>
+                        <input type="date" id="filterDate" class="form-control">
+                    </div>
+                    <div class="col-md-4 d-flex align-items-end gap-2">
+                        <button class="btn btn-primary flex-grow-1 btn-round" onclick="filterHistory()"><i class="fas fa-search"></i> Xem</button>
+                        <button class="btn btn-success flex-grow-1 btn-round" onclick="exportExcel()"><i class="fas fa-download"></i> Excel</button>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-bordered table-striped">
+                        <thead class="table-secondary">
+                            <tr><th>Ngày</th><th>Mã SV</th><th>Họ Tên</th><th>Lớp</th><th>Môn</th><th>Giờ Vào</th><th>TT</th></tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                            <tr><td colspan="7" class="text-center py-3 text-muted">Chọn điều kiện lọc...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
 
-# ==========================================
-# 2. ADMIN - QUẢN TRỊ (ĐÃ KHÔI PHỤC LẠI)
-# ==========================================
-@app.route('/dashboard')
-def dashboard():
-    if 'role' in session and session['role'] == 'admin':
-        return render_template('dashboard.html')
-    return redirect(url_for('login'))
+        <!-- TAB 4: THÔNG TIN CÁ NHÂN -->
+        <div class="tab-pane fade" id="pills-profile">
+            <div class="row justify-content-center g-4">
+                <div class="col-md-8">
 
-@app.route('/create_user', methods=['POST'])
-def create_user():
-    if 'role' not in session or session['role'] != 'admin': return redirect(url_for('login'))
-    
-    ho_ten = request.form['ho_ten']
-    username = request.form['username']
-    password = request.form['password']
-    role = request.form['role']
-    ma_so = request.form['ma_so']
-    hashed_password = generate_password_hash(password)
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        conn.start_transaction()
-        cursor.execute("INSERT INTO tai_khoan (username, password, ho_ten, email, role) VALUES (%s, %s, %s, %s, %s)", (username, hashed_password, ho_ten, '', role))
-        new_id = cursor.lastrowid
-        if role == 'sinh_vien':
-            cursor.execute("INSERT INTO sinh_vien (ma_sv, ho_ten, user_id) VALUES (%s, %s, %s)", (ma_so, ho_ten, new_id))
-        else:
-            cursor.execute("INSERT INTO giao_vien (ma_gv, user_id) VALUES (%s, %s)", (ma_so, new_id))
-        conn.commit()
-        flash('Tạo tài khoản thành công!', 'success')
-    except Exception as e:
-        conn.rollback()
-        flash(f'Lỗi: {e}', 'error')
-    finally:
-        conn.close()
-    return redirect(url_for('dashboard'))
+                    <!-- CẬP NHẬT THÔNG TIN -->
+                    <div class="card shadow p-3">
+                        <div class="card-header bg-info text-white fw-bold"><i class="fas fa-user-edit"></i> Cập Nhật Thông Tin</div>
+                        <div class="card-body">
+                            <form action="/update_profile" method="POST">
+                                <div class="mb-3 row">
+                                    <label class="col-sm-3 col-form-label fw-bold">Họ Tên:</label>
+                                    <div class="col-sm-9"><input type="text" class="form-control-plaintext" value="{{ gv.ho_ten }}" readonly></div>
+                                </div>
+                                <div class="mb-3 row">
+                                    <label class="col-sm-3 col-form-label fw-bold">Mã GV:</label>
+                                    <div class="col-sm-9"><input type="text" class="form-control-plaintext" value="{{ gv.ma_gv }}" readonly></div>
+                                </div>
+                                <div class="mb-3 row">
+                                    <label class="col-sm-3 col-form-label fw-bold">Email:</label>
+                                    <div class="col-sm-9"><input type="email" name="email" class="form-control" value="{{ gv.email or '' }}" placeholder="Nhập email"></div>
+                                </div>
+                                <div class="mb-3 row">
+                                    <label class="col-sm-3 col-form-label fw-bold">Số ĐT:</label>
+                                    <div class="col-sm-9"><input type="text" name="sdt" class="form-control" value="{{ gv.sdt or '' }}" placeholder="Nhập số điện thoại"></div>
+                                </div>
+                                <div class="text-end">
+                                    <button type="submit" class="btn btn-info text-white fw-bold btn-round">Lưu Thay Đổi</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
 
-@app.route('/upload_sample', methods=['POST'])
-def upload_sample():
-    if 'role' not in session or session['role'] != 'admin': return redirect(url_for('login'))
-    
-    ma_so = request.form['ma_so']
-    file = request.files['file']
-    
-    if not file: return redirect(url_for('dashboard'))
+                    <!-- ĐỔI MẬT KHẨU -->
+                    <div class="card shadow p-3 mt-3 border-top border-warning border-3">
+                        <div class="card-body">
+                            <h5 class="text-warning fw-bold mb-3"><i class="fas fa-key"></i> Đổi Mật Khẩu</h5>
+                            <form action="/change_password" method="POST">
+                                <div class="input-group mb-2">
+                                    <span class="input-group-text"><i class="fas fa-lock"></i></span>
+                                    <input type="password" name="old_pass" class="form-control" placeholder="Mật khẩu cũ" required>
+                                </div>
+                                <div class="input-group mb-2">
+                                    <span class="input-group-text"><i class="fas fa-key"></i></span>
+                                    <input type="password" name="new_pass" class="form-control" placeholder="Mật khẩu mới" required>
+                                </div>
+                                <div class="input-group mb-3">
+                                    <span class="input-group-text"><i class="fas fa-check-circle"></i></span>
+                                    <input type="password" name="confirm_pass" class="form-control" placeholder="Nhập lại mật khẩu mới" required>
+                                </div>
+                                <button type="submit" class="btn btn-warning w-100 fw-bold btn-round">Đổi Mật Khẩu</button>
+                            </form>
+                        </div>
+                    </div>
 
-    try:
-        filename = f"{ma_so}.jpg"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
+                </div>
+            </div>
+        </div>
 
-        embedding_objs = DeepFace.represent(img_path=file_path, model_name=MODEL_NAME, enforce_detection=False)
-        
-        if len(embedding_objs) > 0:
-            embedding = embedding_objs[0]["embedding"]
-            embedding_json = json.dumps(embedding)
+    </div>
+</div>
 
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            if "SV" in ma_so.upper():
-                sql = "UPDATE sinh_vien SET face_image_path=%s, face_encoding=%s WHERE ma_sv=%s"
-            else:
-                sql = "UPDATE giao_vien SET face_image_path=%s, face_encoding=%s WHERE ma_gv=%s"
-            
-            cursor.execute(sql, (file_path, embedding_json, ma_so))
-            
-            if cursor.rowcount > 0:
-                conn.commit()
-                flash(f"Train AI thành công cho {ma_so}!", "success")
-            else:
-                flash(f"Không tìm thấy mã số {ma_so}!", "error")
-                if os.path.exists(file_path): os.remove(file_path)
-            conn.close()
-        else:
-            flash("Không tìm thấy mặt trong ảnh!", "error")
-            if os.path.exists(file_path): os.remove(file_path)
+<!-- MODAL SỬA LỊCH -->
+<div class="modal fade" id="editScheduleModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-warning text-dark">
+                <h5 class="modal-title fw-bold"><i class="fas fa-pen"></i> Chỉnh Sửa Lịch Dạy</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="/update_schedule" method="POST">
+                <div class="modal-body">
+                    <input type="hidden" name="lich_id" id="modalLichId">
+                    <div class="mb-2">
+                        <label class="fw-bold">Môn Học - Lớp:</label>
+                        <input type="text" class="form-control" id="modalMonLop" readonly style="background-color:#e9ecef;">
+                    </div>
+                    <div class="row mb-2">
+                        <div class="col">
+                            <label class="fw-bold">Thứ:</label>
+                            <select name="thu" id="modalThu" class="form-select">
+                                <option value="2">Thứ 2</option><option value="3">Thứ 3</option>
+                                <option value="4">Thứ 4</option><option value="5">Thứ 5</option>
+                                <option value="6">Thứ 6</option><option value="7">Thứ 7</option>
+                                <option value="8">Chủ Nhật</option>
+                            </select>
+                        </div>
+                        <div class="col">
+                            <label class="fw-bold">Phòng Học:</label>
+                            <input type="text" name="phong_hoc" id="modalPhong" class="form-control" required>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col">
+                            <label class="fw-bold">Giờ Bắt Đầu:</label>
+                            <input type="time" name="gio_bat_dau" id="modalGioBd" class="form-control" step="1" required>
+                        </div>
+                        <div class="col">
+                            <label class="fw-bold">Giờ Kết Thúc:</label>
+                            <input type="time" name="gio_ket_thuc" id="modalGioKt" class="form-control" step="1" required>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-round" data-bs-dismiss="modal">Hủy</button>
+                    <button type="submit" class="btn btn-primary btn-round">Lưu Lại</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 
-    except Exception as e:
-        flash(f"Lỗi DeepFace: {str(e)}", "error")
+<!-- AUDIO & SCRIPT -->
+<audio id="beepAudio" src="https://actions.google.com/sounds/v1/science_fiction/beep_short.ogg"></audio>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    // --- MODAL SỬA LỊCH ---
+    function openEditModal(id, thu, mon, lop, gioBd, gioKt, phong) {
+        document.getElementById('modalLichId').value = id;
+        document.getElementById('modalThu').value = thu;
+        document.getElementById('modalMonLop').value = `${mon} - ${lop}`;
+        document.getElementById('modalPhong').value = phong;
+        document.getElementById('modalGioBd').value = formatTime(gioBd);
+        document.getElementById('modalGioKt').value = formatTime(gioKt);
+        new bootstrap.Modal(document.getElementById('editScheduleModal')).show();
+    }
 
-    return redirect(url_for('dashboard'))
+    function formatTime(timeStr) {
+        if (!timeStr) return "";
+        return timeStr.length === 7 ? "0"+timeStr : timeStr; 
+    }
 
-# ==========================================
-# 3. GIÁO VIÊN - FULL TÍNH NĂNG
-# ==========================================
-@app.route('/update_profile', methods=['POST'])
-def update_profile():
-    if 'role' not in session or session['role'] != 'giao_vien':
-        return redirect(url_for('login'))
-    
-    email = request.form.get('email')
-    sdt = request.form.get('sdt')
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        # 1. Cập nhật Email trong bảng tai_khoan
-        cursor.execute("UPDATE tai_khoan SET email = %s WHERE user_id = %s", (email, session['user_id']))
-        
-        # 2. Cập nhật SĐT trong bảng giao_vien
-        cursor.execute("UPDATE giao_vien SET sdt = %s WHERE user_id = %s", (sdt, session['user_id']))
-        
-        conn.commit()
-        flash('Cập nhật thông tin cá nhân thành công!', 'success')
-    except Exception as e:
-        conn.rollback()
-        flash(f'Lỗi cập nhật: {str(e)}', 'error')
-    finally:
-        conn.close()
-        
-    return redirect(url_for('teacher_dashboard'))
+    // --- CAMERA & QUÉT ---
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const cameraSelect = document.getElementById('cameraSelect');
+    const scanStatus = document.getElementById('scanStatus');
+    const scanLine = document.getElementById('scanLine');
+    const beepAudio = document.getElementById('beepAudio');
+    let scanInterval = null;
+    let isProcessing = false;
 
-# --- TÍNH NĂNG: CẬP NHẬT LỊCH DẠY (Sửa phòng/giờ) ---
-@app.route('/update_schedule', methods=['POST'])
-def update_schedule():
-    if 'role' not in session or session['role'] != 'giao_vien':
-        return redirect(url_for('login'))
-    
-    lich_id = request.form.get('lich_id')
-    phong_hoc = request.form.get('phong_hoc')
-    thu = request.form.get('thu')
-    gio_bd = request.form.get('gio_bat_dau')
-    gio_kt = request.form.get('gio_ket_thuc')
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        sql = """
-            UPDATE lich_hoc 
-            SET phong_hoc = %s, thu_trong_tuan = %s, gio_bat_dau = %s, gio_ket_thuc = %s
-            WHERE lich_id = %s
-        """
-        cursor.execute(sql, (phong_hoc, thu, gio_bd, gio_kt, lich_id))
-        conn.commit()
-        flash('Cập nhật lịch dạy thành công!', 'success')
-    except Exception as e:
-        conn.rollback()
-        flash(f'Lỗi cập nhật lịch: {str(e)}', 'error')
-    finally:
-        conn.close()
-        
-    return redirect(url_for('teacher_dashboard'))
-@app.route('/teacher_dashboard')
-def teacher_dashboard():
-    if 'role' not in session or session['role'] != 'giao_vien': return redirect(url_for('login'))
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    cursor.execute("""
-        SELECT gv.*, tk.email, tk.username 
-        FROM giao_vien gv 
-        JOIN tai_khoan tk ON gv.user_id = tk.user_id 
-        WHERE gv.user_id = %s
-    """, (session['user_id'],))
-    gv_info = cursor.fetchone()
+    async function initCamera() {
+        try {
+            await navigator.mediaDevices.getUserMedia({ video: true });
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoInputs = devices.filter(d => d.kind === 'videoinput');
+            cameraSelect.innerHTML = "";
+            videoInputs.forEach((d,i) => {
+                const opt = document.createElement('option');
+                opt.value = d.deviceId;
+                opt.text = d.label || `Cam ${i+1}`;
+                cameraSelect.appendChild(opt);
+            });
+            if(videoInputs.length > 0) startStream(videoInputs[0].deviceId);
+        } catch(e) {
+            console.error(e);
+            Swal.fire("Lỗi", "Không thể mở camera.", "error");
+        }
+    }
 
-    cursor.execute("""
-        SELECT lh.*, mh.ten_mon, l.ten_lop 
-        FROM lich_hoc lh
-        JOIN mon_hoc mh ON lh.mon_id = mh.mon_id
-        JOIN lop_hoc l ON lh.lop_id = l.lop_id
-        WHERE lh.gv_id = %s
-        ORDER BY lh.thu_trong_tuan, lh.gio_bat_dau
-    """, (gv_info['gv_id'],))
-    full_schedule = cursor.fetchall()
+    async function startStream(deviceId) {
+        if (!deviceId) return;
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
+        video.srcObject = stream;
+    }
+    cameraSelect.onchange = () => startStream(cameraSelect.value);
+    initCamera();
 
-    cursor.execute("SELECT DISTINCT mon_id, ten_mon FROM mon_hoc")
-    ds_mon = cursor.fetchall()
-    
-    conn.close()
-    return render_template('teacher_dashboard.html', gv=gv_info, schedule=full_schedule, ds_mon=ds_mon)
+    function toggleAutoScan() {
+        if(document.getElementById('autoScanToggle').checked) {
+            const lichId = document.getElementById('lichSelect').value;
+            if(!lichId) {
+                document.getElementById('autoScanToggle').checked = false;
+                return Swal.fire("Lỗi", "Vui lòng chọn lớp trước!", "warning");
+            }
+            scanInterval = setInterval(() => captureAndSend(false), 500);
+            scanLine.style.display = 'block';
+            scanStatus.innerText = "🟢 Đang quét tự động...";
+        } else {
+            clearInterval(scanInterval);
+            scanLine.style.display = 'none';
+            scanStatus.innerText = "⚪ Đã dừng quét";
+        }
+    }
 
-# --- ĐỔI MẬT KHẨU ---
-@app.route('/change_password', methods=['POST'])
-def change_password():
-    if 'user_id' not in session: return redirect(url_for('login'))
-    
-    old_pass = request.form['old_pass']
-    new_pass = request.form['new_pass']
-    confirm_pass = request.form['confirm_pass']
+    function manualScan() { captureAndSend(true); }
 
-    if new_pass != confirm_pass:
-        flash('Mật khẩu mới không khớp!', 'error')
-        return redirect(url_for('teacher_dashboard'))
+    function captureAndSend(isManual) {
+        const lichId = document.getElementById('lichSelect').value;
+        if(!lichId) { if(isManual) Swal.fire("Chú ý", "Chưa chọn lớp!", "warning"); return; }
+        if(isProcessing) return;
+        isProcessing = true;
+        if(isManual) scanStatus.innerText = "⏳ Đang xử lý...";
+        const ctx = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+        const dataURL = canvas.toDataURL('image/jpeg', 0.7);
 
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT password FROM tai_khoan WHERE user_id = %s", (session['user_id'],))
-    user = cursor.fetchone()
+        fetch('/process_attendance', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ image: dataURL, lich_id: lichId })
+        }).then(r => r.json()).then(data => {
+            if(data.status === 'success') {
+                beepAudio.play().catch(()=>{});
+                scanStatus.innerText = `✅ ${data.message}`;
+                scanStatus.style.color = "#0f0";
+                if(isManual) Swal.fire({icon:'success', title:data.message, timer:1000, showConfirmButton:false});
+                loadList();
+            } else {
+                scanStatus.innerText = "⚠️ Không nhận diện được";
+                scanStatus.style.color = "yellow";
+                if(isManual && data.status==='error') Swal.fire("Lỗi", data.message, "error");
+            }
+        }).finally(() => {
+            isProcessing = false;
+            if(document.getElementById('autoScanToggle').checked) {
+                setTimeout(() => { scanStatus.innerText = "🟢 Đang quét..."; scanStatus.style.color = "#fff"; }, 1500);
+            }
+        });
+    }
 
-    if user and check_password_hash(user['password'], old_pass):
-        new_hash = generate_password_hash(new_pass)
-        cursor.execute("UPDATE tai_khoan SET password = %s WHERE user_id = %s", (new_hash, session['user_id']))
-        conn.commit()
-        flash('Đổi mật khẩu thành công!', 'success')
-    else:
-        flash('Mật khẩu cũ không đúng!', 'error')
-    
-    conn.close()
-    return redirect(url_for('teacher_dashboard'))
+    function loadList() {
+        const lichId = document.getElementById('lichSelect').value;
+        if(!lichId) return;
+        fetch('/get_attendance_list', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({lich_id: lichId})
+        }).then(r=>r.json()).then(res=>{
+            const tbody = document.getElementById('liveTableBody');
+            tbody.innerHTML = "";
+            if(res.data.length===0){
+                tbody.innerHTML = `<tr><td colspan="3" class="text-center py-3 text-muted">Chưa có sinh viên</td></tr>`;
+                return;
+            }
+            let html = "";
+            res.data.forEach(sv=>{
+                html += `<tr><td class="fw-bold">${sv.ma_sv}</td><td>${sv.ho_ten}</td><td><span class="badge bg-success">${sv.thoi_gian_vao}</span></td></tr>`;
+            });
+            tbody.innerHTML = html;
+        });
+    }
 
-# --- LỌC LỊCH SỬ ---
-@app.route('/filter_attendance', methods=['POST'])
-def filter_attendance():
-    data = request.json
-    mon_id = data.get('mon_id')
-    ngay_hoc = data.get('ngay_hoc')
-    
-    sql = """
-        SELECT dd.ngay_diem_danh, sv.ma_sv, sv.ho_ten, l.ten_lop, mh.ten_mon, dd.thoi_gian_vao, dd.trang_thai
-        FROM diem_danh dd
-        JOIN sinh_vien sv ON dd.sv_id = sv.sv_id
-        JOIN lich_hoc lh ON dd.lich_id = lh.lich_id
-        JOIN lop_hoc l ON lh.lop_id = l.lop_id
-        JOIN mon_hoc mh ON lh.mon_id = mh.mon_id
-        WHERE 1=1
-    """
-    params = []
-    if mon_id:
-        sql += " AND lh.mon_id = %s"
-        params.append(mon_id)
-    if ngay_hoc:
-        sql += " AND dd.ngay_diem_danh = %s"
-        params.append(ngay_hoc)
-        
-    sql += " ORDER BY dd.ngay_diem_danh DESC, dd.thoi_gian_vao DESC"
+    function filterHistory() {
+        const monId = document.getElementById('filterMon').value;
+        const dateVal = document.getElementById('filterDate').value;
+        fetch('/filter_attendance',{
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({mon_id:monId, ngay_hoc:dateVal})
+        }).then(r=>r.json()).then(res=>{
+            const tbody = document.getElementById('historyTableBody');
+            tbody.innerHTML = "";
+            if(res.data.length===0){ 
+                tbody.innerHTML=`<tr><td colspan="7" class="text-center py-3">Không có dữ liệu.</td></tr>`;
+                return;
+            }
+            let html = "";
+            res.data.forEach(r=>{
+                html += `<tr>
+                    <td>${r.ngay_diem_danh}</td>
+                    <td class="fw-bold">${r.ma_sv}</td>
+                    <td>${r.ho_ten}</td>
+                    <td>${r.ten_lop}</td>
+                    <td>${r.ten_mon}</td>
+                    <td>${r.thoi_gian_vao}</td>
+                    <td><span class="badge bg-success">${r.trang_thai}</span></td>
+                </tr>`;
+            });
+            tbody.innerHTML = html;
+        });
+    }
 
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(sql, tuple(params))
-    results = cursor.fetchall()
-    
-    for r in results:
-        r['ngay_diem_danh'] = str(r['ngay_diem_danh'])
-        r['thoi_gian_vao'] = str(r['thoi_gian_vao'])
-        
-    conn.close()
-    return jsonify({'status': 'success', 'data': results})
-
-# --- XUẤT EXCEL ---
-@app.route('/export_excel')
-def export_excel():
-    if 'role' not in session or session['role'] != 'giao_vien': return redirect(url_for('login'))
-    
-    mon_id = request.args.get('mon_id')
-    ngay_hoc = request.args.get('ngay_hoc')
-
-    conn = get_db_connection()
-    sql = """
-        SELECT dd.ngay_diem_danh AS 'Ngày', sv.ma_sv AS 'Mã SV', sv.ho_ten AS 'Họ Tên', 
-               l.ten_lop AS 'Lớp', mh.ten_mon AS 'Môn Học', dd.thoi_gian_vao AS 'Giờ Vào', dd.trang_thai AS 'Trạng Thái'
-        FROM diem_danh dd
-        JOIN sinh_vien sv ON dd.sv_id = sv.sv_id
-        JOIN lich_hoc lh ON dd.lich_id = lh.lich_id
-        JOIN lop_hoc l ON lh.lop_id = l.lop_id
-        JOIN mon_hoc mh ON lh.mon_id = mh.mon_id
-        WHERE 1=1
-    """
-    params = []
-    if mon_id:
-        sql += " AND lh.mon_id = %s"
-        params.append(mon_id)
-    if ngay_hoc:
-        sql += " AND dd.ngay_diem_danh = %s"
-        params.append(ngay_hoc)
-
-    df = pd.read_sql(sql, conn, params=tuple(params))
-    conn.close()
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='DiemDanh')
-    output.seek(0)
-    
-    filename = f"DiemDanh_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-    return send_file(output, download_name=filename, as_attachment=True)
-
-# ==========================================
-# 4. XỬ LÝ CAMERA & ĐIỂM DANH (GIỮ NGUYÊN)
-# ==========================================
-@app.route('/get_attendance_list', methods=['POST'])
-def get_attendance_list():
-    data = request.json
-    lich_id = data.get('lich_id')
-    today = date.today()
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    sql = """SELECT sv.ma_sv, sv.ho_ten, dd.thoi_gian_vao FROM diem_danh dd
-             JOIN sinh_vien sv ON dd.sv_id = sv.sv_id
-             WHERE dd.lich_id=%s AND dd.ngay_diem_danh=%s ORDER BY dd.thoi_gian_vao DESC"""
-    cursor.execute(sql, (lich_id, today))
-    rows = cursor.fetchall()
-    for r in rows: r['thoi_gian_vao'] = str(r['thoi_gian_vao'])
-    conn.close()
-    return jsonify({'status': 'success', 'data': rows})
-
-@app.route('/process_attendance', methods=['POST'])
-def process_attendance():
-    data = request.json
-    image_data = data['image']
-    lich_id = data['lich_id']
-    try:
-        header, encoded = image_data.split(",", 1)
-        nparr = np.frombuffer(base64.b64decode(encoded), np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        embedding_objs = DeepFace.represent(img_path=img, model_name=MODEL_NAME, enforce_detection=False)
-        if len(embedding_objs) == 0: return jsonify({'status': 'fail', 'message': 'Không thấy mặt'})
-        target_embedding = embedding_objs[0]["embedding"]
-        
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT sv_id, ho_ten, face_encoding FROM sinh_vien JOIN lich_hoc lh ON sinh_vien.lop_id=lh.lop_id WHERE lh.lich_id=%s AND face_encoding IS NOT NULL", (lich_id,))
-        students = cursor.fetchall()
-        
-        detected_name = None
-        min_dist = 100
-        
-        for sv in students:
-            db_emb = json.loads(sv['face_encoding'])
-            a = np.matmul(np.transpose(target_embedding), db_emb)
-            b = np.sum(np.multiply(target_embedding, target_embedding))
-            c = np.sum(np.multiply(db_emb, db_emb))
-            dist = 1 - (a / (np.sqrt(b) * np.sqrt(c)))
-            if dist < 0.4 and dist < min_dist:
-                min_dist = dist
-                detected_name = sv['ho_ten']
-                sv_id_match = sv['sv_id']
-        
-        if detected_name:
-            now = datetime.now().strftime('%H:%M:%S')
-            today = date.today()
-            cursor.execute("INSERT INTO diem_danh (sv_id, lich_id, ngay_diem_danh, thoi_gian_vao, trang_thai) VALUES (%s, %s, %s, %s, 'co_mat') ON DUPLICATE KEY UPDATE thoi_gian_vao=%s", (sv_id_match, lich_id, today, now, now))
-            conn.commit()
-            conn.close()
-            return jsonify({'status': 'success', 'message': f"Đã điểm danh: {detected_name}"})
-        
-        conn.close()
-        return jsonify({'status': 'unknown', 'message': 'Không nhận diện được'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
-
-# ==========================================
-# 5. SINH VIÊN
-# ==========================================
-@app.route('/student_dashboard')
-def student_dashboard():
-    if 'role' not in session or session['role'] != 'sinh_vien': return redirect(url_for('login'))
-    return render_template('student_dashboard.html', sv={'ho_ten': session['ho_ten']})
-
-if __name__ == '__main__':
-    app.run(debug=True)
+    function exportExcel() {
+        const monId = document.getElementById('filterMon').value;
+        const dateVal = document.getElementById('filterDate').value;
+        window.location.href = `/export_excel?mon_id=${monId}&ngay_hoc=${dateVal}`;
+    }
+</script>
+{% include 'alerts.html' %}
+</body>
+</html>
