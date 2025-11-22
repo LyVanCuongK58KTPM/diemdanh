@@ -18,7 +18,7 @@ app.secret_key = 'khoa_bi_mat_sieu_cap_vip_pro'
 # --- CẤU HÌNH DB ---
 db_config = {
     'user': 'avnadmin',
-    'password': 'AVNS_uwfAJ91Ub4Jnhc-_pOB', # <--- ĐIỀN MẬT KHẨU CỦA BẠN
+    'password': 'AVNS_uwfAJ91Ub4Jnhc-_pOB', # <--- ĐIỀN MẬT KHẨU DB CỦA BẠN
     'host': 'mysql-2b420606-lyvancuongklbg-6918.e.aivencloud.com',
     'port': 27739,
     'database': 'FaceAttendanceDB',
@@ -28,10 +28,7 @@ db_config = {
 UPLOAD_FOLDER = 'static/faces'
 if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-# --- QUAN TRỌNG: ĐỔI MODEL NHẸ HƠN CHO SERVER FREE ---
-# VGG-Face (nặng ~600MB) -> Facenet512 (nặng ~90MB)
-MODEL_NAME = "Facenet512"
+MODEL_NAME = "VGG-Face"
 
 def get_db_connection():
     return mysql.connector.connect(**db_config)
@@ -39,18 +36,13 @@ def get_db_connection():
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg'}
 
-# --- HÀM XỬ LÝ ẢNH TỐI ƯU RAM ---
+# Hàm xử lý ảnh PIL
 def process_image_robust(image_source):
     try:
         if hasattr(image_source, 'seek'): image_source.seek(0)
         img_pil = Image.open(image_source)
         img_pil = ImageOps.exif_transpose(img_pil)
         img_pil = img_pil.convert('RGB')
-        
-        # --- GIẢM KÍCH THƯỚC ẢNH ĐỂ TIẾT KIỆM RAM ---
-        # Nếu ảnh lớn hơn 1024px, thu nhỏ lại. AI vẫn nhận diện tốt.
-        img_pil.thumbnail((1024, 1024)) 
-        
         return np.array(img_pil, dtype=np.uint8)
     except: return None
 
@@ -73,6 +65,7 @@ def login():
                 session['role'] = user['role']
                 session['ho_ten'] = user['ho_ten']
                 
+                # Chuyển hướng đúng theo vai trò
                 if user['role'] == 'admin': return redirect(url_for('dashboard'))
                 elif user['role'] == 'giao_vien': return redirect(url_for('teacher_dashboard'))
                 else: return redirect(url_for('student_dashboard'))
@@ -88,17 +81,12 @@ def logout():
     return redirect(url_for('login'))
 
 # ==========================================
-# 2. ADMIN
+# 2. ADMIN - QUẢN TRỊ (ĐÃ KHÔI PHỤC LẠI)
 # ==========================================
 @app.route('/dashboard')
 def dashboard():
     if 'role' in session and session['role'] == 'admin':
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM mon_hoc ORDER BY mon_id DESC")
-        ds_mon = cursor.fetchall()
-        conn.close()
-        return render_template('dashboard.html', ds_mon=ds_mon)
+        return render_template('dashboard.html')
     return redirect(url_for('login'))
 
 @app.route('/create_user', methods=['POST'])
@@ -143,15 +131,8 @@ def upload_sample():
     try:
         filename = f"{ma_so}.jpg"
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
-        # --- TỐI ƯU: Dùng PIL resize ảnh trước khi lưu ---
-        img_pil = Image.open(file)
-        img_pil = ImageOps.exif_transpose(img_pil)
-        img_pil = img_pil.convert('RGB')
-        img_pil.thumbnail((1024, 1024)) # Resize tối đa 1024px để nhẹ máy
-        img_pil.save(file_path)
+        file.save(file_path)
 
-        # Dùng DeepFace trích xuất (Model Facenet512 nhẹ hơn)
         embedding_objs = DeepFace.represent(img_path=file_path, model_name=MODEL_NAME, enforce_detection=False)
         
         if len(embedding_objs) > 0:
@@ -180,49 +161,70 @@ def upload_sample():
             if os.path.exists(file_path): os.remove(file_path)
 
     except Exception as e:
-        # In lỗi ra console của Render để dễ check
-        print(f"Lỗi Upload: {e}")
-        flash(f"Lỗi xử lý: {str(e)}", "error")
+        flash(f"Lỗi DeepFace: {str(e)}", "error")
 
     return redirect(url_for('dashboard'))
 
-# --- QUẢN LÝ MÔN HỌC ---
-@app.route('/add_subject', methods=['POST'])
-def add_subject():
-    if 'role' not in session or session['role'] != 'admin': return redirect(url_for('login'))
-    ten_mon = request.form.get('ten_mon')
-    so_tin_chi = request.form.get('so_tin_chi')
+# ==========================================
+# 3. GIÁO VIÊN - FULL TÍNH NĂNG
+# ==========================================
+@app.route('/update_profile', methods=['POST'])
+def update_profile():
+    if 'role' not in session or session['role'] != 'giao_vien':
+        return redirect(url_for('login'))
+    
+    email = request.form.get('email')
+    sdt = request.form.get('sdt')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO mon_hoc (ten_mon, so_tin_chi) VALUES (%s, %s)", (ten_mon, so_tin_chi))
+        # 1. Cập nhật Email trong bảng tai_khoan
+        cursor.execute("UPDATE tai_khoan SET email = %s WHERE user_id = %s", (email, session['user_id']))
+        
+        # 2. Cập nhật SĐT trong bảng giao_vien
+        cursor.execute("UPDATE giao_vien SET sdt = %s WHERE user_id = %s", (sdt, session['user_id']))
+        
         conn.commit()
-        conn.close()
-        flash(f'Đã thêm môn: {ten_mon}', 'success')
+        flash('Cập nhật thông tin cá nhân thành công!', 'success')
     except Exception as e:
-        flash(f'Lỗi thêm môn: {str(e)}', 'error')
-    return redirect(url_for('dashboard'))
-
-@app.route('/delete_subject/<int:mon_id>')
-def delete_subject(mon_id):
-    if 'role' not in session or session['role'] != 'admin': return redirect(url_for('login'))
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM mon_hoc WHERE mon_id = %s", (mon_id,))
-        conn.commit()
+        conn.rollback()
+        flash(f'Lỗi cập nhật: {str(e)}', 'error')
+    finally:
         conn.close()
-        flash('Đã xóa môn học thành công!', 'success')
-    except mysql.connector.Error as err:
-        if err.errno == 1451:
-            flash('Không thể xóa môn này vì đang có Lịch dạy liên quan!', 'error')
-        else:
-            flash(f'Lỗi xóa môn: {str(err)}', 'error')
-    return redirect(url_for('dashboard'))
+        
+    return redirect(url_for('teacher_dashboard'))
 
-# ==========================================
-# 3. GIÁO VIÊN
-# ==========================================
+# --- TÍNH NĂNG: CẬP NHẬT LỊCH DẠY (Sửa phòng/giờ) ---
+@app.route('/update_schedule', methods=['POST'])
+def update_schedule():
+    if 'role' not in session or session['role'] != 'giao_vien':
+        return redirect(url_for('login'))
+    
+    lich_id = request.form.get('lich_id')
+    phong_hoc = request.form.get('phong_hoc')
+    thu = request.form.get('thu')
+    gio_bd = request.form.get('gio_bat_dau')
+    gio_kt = request.form.get('gio_ket_thuc')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        sql = """
+            UPDATE lich_hoc 
+            SET phong_hoc = %s, thu_trong_tuan = %s, gio_bat_dau = %s, gio_ket_thuc = %s
+            WHERE lich_id = %s
+        """
+        cursor.execute(sql, (phong_hoc, thu, gio_bd, gio_kt, lich_id))
+        conn.commit()
+        flash('Cập nhật lịch dạy thành công!', 'success')
+    except Exception as e:
+        conn.rollback()
+        flash(f'Lỗi cập nhật lịch: {str(e)}', 'error')
+    finally:
+        conn.close()
+        
+    return redirect(url_for('teacher_dashboard'))
 @app.route('/teacher_dashboard')
 def teacher_dashboard():
     if 'role' not in session or session['role'] != 'giao_vien': return redirect(url_for('login'))
@@ -230,10 +232,22 @@ def teacher_dashboard():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     
-    cursor.execute("SELECT gv.*, tk.email, tk.username FROM giao_vien gv JOIN tai_khoan tk ON gv.user_id = tk.user_id WHERE gv.user_id = %s", (session['user_id'],))
+    cursor.execute("""
+        SELECT gv.*, tk.email, tk.username 
+        FROM giao_vien gv 
+        JOIN tai_khoan tk ON gv.user_id = tk.user_id 
+        WHERE gv.user_id = %s
+    """, (session['user_id'],))
     gv_info = cursor.fetchone()
 
-    cursor.execute("SELECT lh.*, mh.ten_mon, l.ten_lop FROM lich_hoc lh JOIN mon_hoc mh ON lh.mon_id = mh.mon_id JOIN lop_hoc l ON lh.lop_id = l.lop_id WHERE lh.gv_id = %s ORDER BY lh.thu_trong_tuan, lh.gio_bat_dau", (gv_info['gv_id'],))
+    cursor.execute("""
+        SELECT lh.*, mh.ten_mon, l.ten_lop 
+        FROM lich_hoc lh
+        JOIN mon_hoc mh ON lh.mon_id = mh.mon_id
+        JOIN lop_hoc l ON lh.lop_id = l.lop_id
+        WHERE lh.gv_id = %s
+        ORDER BY lh.thu_trong_tuan, lh.gio_bat_dau
+    """, (gv_info['gv_id'],))
     full_schedule = cursor.fetchall()
 
     cursor.execute("SELECT DISTINCT mon_id, ten_mon FROM mon_hoc")
@@ -242,28 +256,11 @@ def teacher_dashboard():
     conn.close()
     return render_template('teacher_dashboard.html', gv=gv_info, schedule=full_schedule, ds_mon=ds_mon)
 
-@app.route('/update_profile', methods=['POST'])
-def update_profile():
-    if 'role' not in session or session['role'] != 'giao_vien': return redirect(url_for('login'))
-    email = request.form.get('email')
-    sdt = request.form.get('sdt')
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE tai_khoan SET email = %s WHERE user_id = %s", (email, session['user_id']))
-        cursor.execute("UPDATE giao_vien SET sdt = %s WHERE user_id = %s", (sdt, session['user_id']))
-        conn.commit()
-        flash('Cập nhật thông tin thành công!', 'success')
-    except Exception as e:
-        conn.rollback()
-        flash(f'Lỗi: {str(e)}', 'error')
-    finally:
-        conn.close()
-    return redirect(url_for('teacher_dashboard'))
-
+# --- ĐỔI MẬT KHẨU ---
 @app.route('/change_password', methods=['POST'])
 def change_password():
     if 'user_id' not in session: return redirect(url_for('login'))
+    
     old_pass = request.form['old_pass']
     new_pass = request.form['new_pass']
     confirm_pass = request.form['confirm_pass']
@@ -284,40 +281,24 @@ def change_password():
         flash('Đổi mật khẩu thành công!', 'success')
     else:
         flash('Mật khẩu cũ không đúng!', 'error')
+    
     conn.close()
     return redirect(url_for('teacher_dashboard'))
 
-@app.route('/update_schedule', methods=['POST'])
-def update_schedule():
-    if 'role' not in session or session['role'] != 'giao_vien': return redirect(url_for('login'))
-    lich_id = request.form.get('lich_id')
-    phong_hoc = request.form.get('phong_hoc')
-    thu = request.form.get('thu')
-    gio_bd = request.form.get('gio_bat_dau')
-    gio_kt = request.form.get('gio_ket_thuc')
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        sql = "UPDATE lich_hoc SET phong_hoc = %s, thu_trong_tuan = %s, gio_bat_dau = %s, gio_ket_thuc = %s WHERE lich_id = %s"
-        cursor.execute(sql, (phong_hoc, thu, gio_bd, gio_kt, lich_id))
-        conn.commit()
-        flash('Cập nhật lịch dạy thành công!', 'success')
-    except Exception as e:
-        conn.rollback()
-        flash(f'Lỗi cập nhật: {str(e)}', 'error')
-    finally:
-        conn.close()
-    return redirect(url_for('teacher_dashboard'))
-
+# --- LỌC LỊCH SỬ ---
 @app.route('/filter_attendance', methods=['POST'])
 def filter_attendance():
     data = request.json
     mon_id = data.get('mon_id')
     ngay_hoc = data.get('ngay_hoc')
+    
     sql = """
         SELECT dd.ngay_diem_danh, sv.ma_sv, sv.ho_ten, l.ten_lop, mh.ten_mon, dd.thoi_gian_vao, dd.trang_thai
-        FROM diem_danh dd JOIN sinh_vien sv ON dd.sv_id = sv.sv_id JOIN lich_hoc lh ON dd.lich_id = lh.lich_id
-        JOIN lop_hoc l ON lh.lop_id = l.lop_id JOIN mon_hoc mh ON lh.mon_id = mh.mon_id
+        FROM diem_danh dd
+        JOIN sinh_vien sv ON dd.sv_id = sv.sv_id
+        JOIN lich_hoc lh ON dd.lich_id = lh.lich_id
+        JOIN lop_hoc l ON lh.lop_id = l.lop_id
+        JOIN mon_hoc mh ON lh.mon_id = mh.mon_id
         WHERE 1=1
     """
     params = []
@@ -327,29 +308,38 @@ def filter_attendance():
     if ngay_hoc:
         sql += " AND dd.ngay_diem_danh = %s"
         params.append(ngay_hoc)
+        
     sql += " ORDER BY dd.ngay_diem_danh DESC, dd.thoi_gian_vao DESC"
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(sql, tuple(params))
     results = cursor.fetchall()
+    
     for r in results:
         r['ngay_diem_danh'] = str(r['ngay_diem_danh'])
         r['thoi_gian_vao'] = str(r['thoi_gian_vao'])
+        
     conn.close()
     return jsonify({'status': 'success', 'data': results})
 
+# --- XUẤT EXCEL ---
 @app.route('/export_excel')
 def export_excel():
     if 'role' not in session or session['role'] != 'giao_vien': return redirect(url_for('login'))
+    
     mon_id = request.args.get('mon_id')
     ngay_hoc = request.args.get('ngay_hoc')
+
     conn = get_db_connection()
     sql = """
         SELECT dd.ngay_diem_danh AS 'Ngày', sv.ma_sv AS 'Mã SV', sv.ho_ten AS 'Họ Tên', 
                l.ten_lop AS 'Lớp', mh.ten_mon AS 'Môn Học', dd.thoi_gian_vao AS 'Giờ Vào', dd.trang_thai AS 'Trạng Thái'
-        FROM diem_danh dd JOIN sinh_vien sv ON dd.sv_id = sv.sv_id JOIN lich_hoc lh ON dd.lich_id = lh.lich_id
-        JOIN lop_hoc l ON lh.lop_id = l.lop_id JOIN mon_hoc mh ON lh.mon_id = mh.mon_id
+        FROM diem_danh dd
+        JOIN sinh_vien sv ON dd.sv_id = sv.sv_id
+        JOIN lich_hoc lh ON dd.lich_id = lh.lich_id
+        JOIN lop_hoc l ON lh.lop_id = l.lop_id
+        JOIN mon_hoc mh ON lh.mon_id = mh.mon_id
         WHERE 1=1
     """
     params = []
@@ -359,18 +349,20 @@ def export_excel():
     if ngay_hoc:
         sql += " AND dd.ngay_diem_danh = %s"
         params.append(ngay_hoc)
-    
+
     df = pd.read_sql(sql, conn, params=tuple(params))
     conn.close()
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='DiemDanh')
     output.seek(0)
+    
     filename = f"DiemDanh_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     return send_file(output, download_name=filename, as_attachment=True)
 
 # ==========================================
-# 4. API ĐIỂM DANH AI
+# 4. XỬ LÝ CAMERA & ĐIỂM DANH (GIỮ NGUYÊN)
 # ==========================================
 @app.route('/get_attendance_list', methods=['POST'])
 def get_attendance_list():
@@ -397,14 +389,7 @@ def process_attendance():
         header, encoded = image_data.split(",", 1)
         nparr = np.frombuffer(base64.b64decode(encoded), np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        # Dùng PIL để resize ảnh webcam cho nhẹ
-        img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        img_pil.thumbnail((800, 800)) # Resize
-        img_optimized = np.array(img_pil)
-
-        # Dùng DeepFace Facenet512
-        embedding_objs = DeepFace.represent(img_path=img_optimized, model_name=MODEL_NAME, enforce_detection=False)
+        embedding_objs = DeepFace.represent(img_path=img, model_name=MODEL_NAME, enforce_detection=False)
         if len(embedding_objs) == 0: return jsonify({'status': 'fail', 'message': 'Không thấy mặt'})
         target_embedding = embedding_objs[0]["embedding"]
         
@@ -438,7 +423,6 @@ def process_attendance():
         conn.close()
         return jsonify({'status': 'unknown', 'message': 'Không nhận diện được'})
     except Exception as e:
-        print(e)
         return jsonify({'status': 'error', 'message': str(e)})
 
 # ==========================================
