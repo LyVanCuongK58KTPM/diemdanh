@@ -347,7 +347,7 @@
                 document.getElementById('autoScanToggle').checked = false;
                 return Swal.fire("Lỗi", "Vui lòng chọn lớp trước!", "warning");
             }
-            scanInterval = setInterval(() => captureAndSend(false), 2500);
+            scanInterval = setInterval(() => captureAndSend(false), 500);
             scanLine.style.display = 'block';
             scanStatus.innerText = "🟢 Đang quét tự động...";
         } else {
