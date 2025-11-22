@@ -1,0 +1,10 @@
+flask
+gunicorn
+mysql-connector-python
+deepface
+tf-keras
+opencv-python-headless
+numpy
+pandas
+openpyxl
+Pillow

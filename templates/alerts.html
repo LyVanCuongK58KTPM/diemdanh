@@ -1,0 +1,18 @@
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                {% for category, message in messages %}
+                    Swal.fire({
+                        icon: '{{ category }}',
+                        title: 'Thông báo',
+                        text: '{{ message }}',
+                        timer: {{ 2000 if category == "success" else "null" }},
+                        timerProgressBar: true
+                    });
+                {% endfor %}
+            });
+        </script>
+    {% endif %}
+{% endwith %}
